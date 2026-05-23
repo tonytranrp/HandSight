@@ -276,6 +276,9 @@ namespace
         SetStatus(L"Android stream connected.");
 
         std::vector<std::uint8_t> frameBytes;
+        std::vector<std::uint8_t> nextFrameBytes;
+        bool hasNextFrame = false;
+        std::uint64_t frameCount = 0;
 
         while (g_app != nullptr && g_app->running.load())
         {
@@ -291,10 +294,20 @@ namespace
                 return false;
             }
 
-            frameBytes.resize(frameHeader.payloadSize);
-            if (!RecvAll(socket, frameBytes.data(), static_cast<int>(frameBytes.size())))
+            nextFrameBytes.resize(frameHeader.payloadSize);
+            if (!RecvAll(socket, nextFrameBytes.data(), static_cast<int>(nextFrameBytes.size())))
             {
                 return false;
+            }
+
+            if (!hasNextFrame)
+            {
+                frameBytes = nextFrameBytes;
+                hasNextFrame = true;
+            }
+            else
+            {
+                frameBytes = nextFrameBytes;
             }
 
             FrameBuffer decodedFrame;
@@ -316,6 +329,8 @@ namespace
             {
                 InvalidateRect(g_app->window, nullptr, FALSE);
             }
+
+            frameCount++;
         }
 
         return false;

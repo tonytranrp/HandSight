@@ -39,7 +39,7 @@ namespace
 {
     constexpr char kServerIp[] = "127.0.0.1";
     constexpr std::uint16_t kServerPort = 5001;
-    constexpr std::uint8_t kJpegQuality = 70;  // Reduced from 92 for faster decoding
+    constexpr std::uint8_t kJpegQuality = 92;
     constexpr float kRequestedZoomRatio = 0.6f;
     constexpr int32_t kMaxImages = 3;
 

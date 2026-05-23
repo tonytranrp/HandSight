@@ -76,6 +76,17 @@ namespace
         std::deque<FramePacket> frameQueue;
     };
 
+    struct DebugHUD
+    {
+        std::string line1 = "";
+        std::string line2 = "";
+        std::string line3 = "";
+        std::string line4 = "";
+        std::string line5 = "";
+        std::string line6 = "";
+        std::mutex hudMutex;
+    };
+
     struct NetworkStats
     {
         std::uint64_t totalBytesSent = 0;
@@ -87,6 +98,7 @@ namespace
         std::atomic<int> packetLossPercent{ 0 };
         std::string connectionStatus = "Disconnected";
         std::mutex statsMutex;
+        DebugHUD debugHUD;
     };
 
     struct AppState
@@ -128,6 +140,37 @@ namespace
             stats.framesAtLastSample = sentFrames;
             stats.lastSampleTime = now;
         }
+    }
+
+    static void UpdateHUD(NetworkStats& netStats, const CameraContext& camera)
+    {
+        std::lock_guard<std::mutex> lock(netStats.debugHUD.hudMutex);
+
+        char buffer[256];
+
+        snprintf(buffer, sizeof(buffer), "FPS: %.1f | Sent: %llu",
+                 netStats.currentFramesSec,
+                 static_cast<unsigned long long>(camera.sentFrames.load()));
+        netStats.debugHUD.line1 = buffer;
+
+        snprintf(buffer, sizeof(buffer), "Captured: %llu | Conn: %s",
+                 static_cast<unsigned long long>(camera.capturedFrames.load()),
+                 netStats.isConnected.load() ? "YES" : "NO");
+        netStats.debugHUD.line2 = buffer;
+
+        snprintf(buffer, sizeof(buffer), "Throughput: %.2f MB/s",
+                 netStats.currentBytesSec / (1024.0 * 1024.0));
+        netStats.debugHUD.line3 = buffer;
+
+        snprintf(buffer, sizeof(buffer), "Total: %.2f MB",
+                 netStats.totalBytesSent / (1024.0 * 1024.0));
+        netStats.debugHUD.line4 = buffer;
+
+        snprintf(buffer, sizeof(buffer), "Status: %s", netStats.connectionStatus.c_str());
+        netStats.debugHUD.line5 = buffer;
+
+        snprintf(buffer, sizeof(buffer), "Resolution: 1280x960 | JPEG Q92");
+        netStats.debugHUD.line6 = buffer;
     }
 
     static void LogDebugStats(AppState* app, const char* context)
@@ -948,7 +991,19 @@ namespace
                 if (g_app != nullptr)
                 {
                     UpdateNetworkStats(g_app->netStats, totalBytesSent, sentCount, true);
+                    UpdateHUD(g_app->netStats, camera);
                     LogDebugStats(g_app, "SEND");
+
+                    std::lock_guard<std::mutex> lock(g_app->netStats.debugHUD.hudMutex);
+                    LOGI("╔════════════════════════════════════════╗");
+                    LOGI("║  📱 HANDSIGHT DEBUG HUD               ║");
+                    LOGI("║ %s  │", g_app->netStats.debugHUD.line1.c_str());
+                    LOGI("║ %s  │", g_app->netStats.debugHUD.line2.c_str());
+                    LOGI("║ %s  │", g_app->netStats.debugHUD.line3.c_str());
+                    LOGI("║ %s  │", g_app->netStats.debugHUD.line4.c_str());
+                    LOGI("║ %s  │", g_app->netStats.debugHUD.line5.c_str());
+                    LOGI("║ %s  │", g_app->netStats.debugHUD.line6.c_str());
+                    LOGI("╚════════════════════════════════════════╝");
                 }
 
                 LOGI("[SEND] Frames: %llu | Size: %u bytes | Total: %.2f MB | Captured: %llu",

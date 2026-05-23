@@ -1,32 +1,36 @@
-# Prerequisites
-*.d
+# Build directories
+out/
+build/
+.vs/
+.vscode/
+.omx/
 
-# Compiled Object files
-*.slo
-*.lo
+# Compiled artifacts
 *.o
 *.obj
-
-# Precompiled Headers
-*.gch
-*.pch
-
-# Compiled Dynamic libraries
+*.a
+*.lib
 *.so
 *.dylib
 *.dll
-
-# Fortran module files
-*.mod
-*.smod
-
-# Compiled Static libraries
-*.lai
-*.la
-*.a
-*.lib
-
-# Executables
 *.exe
 *.out
 *.app
+*.d
+*.slo
+*.lo
+
+# IDE and editor files
+*.swp
+*.swo
+.DS_Store
+
+# Test/debug artifacts
+*.log
+*.apk
+*.so
+
+# Screenshots and temporary images
+latest-phone-photo.jpg
+receiver-screenshot.png
+verify-screen*.png

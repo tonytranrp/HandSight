@@ -76,6 +76,19 @@ namespace
         std::deque<FramePacket> frameQueue;
     };
 
+    struct NetworkStats
+    {
+        std::uint64_t totalBytesSent = 0;
+        std::uint64_t framesAtLastSample = 0;
+        std::chrono::steady_clock::time_point lastSampleTime;
+        double currentBytesSec = 0.0;
+        double currentFramesSec = 0.0;
+        std::atomic<bool> isConnected{ false };
+        std::atomic<int> packetLossPercent{ 0 };
+        std::string connectionStatus = "Disconnected";
+        std::mutex statsMutex;
+    };
+
     struct AppState
     {
         android_app* app = nullptr;
@@ -83,6 +96,7 @@ namespace
         std::atomic<bool> cameraStarted{ false };
         std::thread networkThread;
         CameraContext camera;
+        NetworkStats netStats;
     };
 
     AppState* g_app = nullptr;
@@ -91,7 +105,45 @@ namespace
 
     static void SetStatus(const char* text)
     {
-        LOGI("%s", text);
+        LOGI("[STATUS] %s", text);
+    }
+
+    static void UpdateNetworkStats(NetworkStats& stats, std::uint64_t sentBytes, std::uint64_t sentFrames, bool connected)
+    {
+        std::lock_guard<std::mutex> lock(stats.statsMutex);
+        stats.totalBytesSent = sentBytes;
+        stats.isConnected.store(connected);
+
+        const auto now = std::chrono::steady_clock::now();
+        const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - stats.lastSampleTime);
+
+        if (elapsed.count() >= 1000)
+        {
+            const std::uint64_t framesSinceSample = sentFrames - stats.framesAtLastSample;
+            const std::uint64_t bytesSinceSample = sentBytes >= stats.totalBytesSent ? sentBytes - stats.totalBytesSent : sentBytes;
+
+            stats.currentFramesSec = static_cast<double>(framesSinceSample) * 1000.0 / static_cast<double>(elapsed.count());
+            stats.currentBytesSec = static_cast<double>(bytesSinceSample) * 1000.0 / static_cast<double>(elapsed.count());
+
+            stats.framesAtLastSample = sentFrames;
+            stats.lastSampleTime = now;
+        }
+    }
+
+    static void LogDebugStats(const AppState* app, const char* context)
+    {
+        if (app == nullptr)
+            return;
+
+        std::lock_guard<std::mutex> lock(app->netStats.statsMutex);
+        LOGI("[DEBUG-%s] Connected: %s | Frames: %llu | Bytes: %.2f KB/s (%.2f MB/s) | FPS: %.1f | Status: %s",
+             context,
+             app->netStats.isConnected.load() ? "YES" : "NO",
+             static_cast<unsigned long long>(app->camera.sentFrames.load()),
+             app->netStats.currentBytesSec / 1024.0,
+             app->netStats.currentBytesSec / (1024.0 * 1024.0),
+             app->netStats.currentFramesSec,
+             app->netStats.connectionStatus.c_str());
     }
 
     static bool SendAll(int socketFd, const void* buffer, size_t size)
@@ -823,8 +875,19 @@ namespace
 
         if (!SendAll(socketFd, &header, sizeof(header)))
         {
+            LOGE("[SEND] Failed to send stream header");
             return false;
         }
+
+        LOGI("[STREAM] Header sent: %ux%u, rotation=%u°", camera.streamWidth, camera.streamHeight, camera.rotationDegrees);
+        if (g_app != nullptr)
+        {
+            g_app->netStats.connectionStatus = "CONNECTED";
+            g_app->netStats.isConnected.store(true);
+        }
+
+        auto lastDebugTime = std::chrono::steady_clock::now();
+        std::uint64_t totalBytesSent = sizeof(header);
 
         while (g_app != nullptr && g_app->running.load())
         {
@@ -857,23 +920,42 @@ namespace
 
             if (!SendAll(socketFd, &frameHeader, sizeof(frameHeader)))
             {
+                LOGE("[SEND] Failed to send frame header (frame #%llu, %u bytes)",
+                     static_cast<unsigned long long>(camera.sentFrames.load()), frameHeader.payloadSize);
                 return false;
             }
             if (!SendAll(socketFd, packet.payload.data(), packet.payload.size()))
             {
+                LOGE("[SEND] Failed to send frame payload (frame #%llu, %u bytes)",
+                     static_cast<unsigned long long>(camera.sentFrames.load()), frameHeader.payloadSize);
                 return false;
             }
+
+            totalBytesSent += sizeof(frameHeader) + frameHeader.payloadSize;
 
             static std::atomic<bool> firstFrameSentLogged{ false };
             if (!firstFrameSentLogged.exchange(true))
             {
-                LOGI("First frame sent to Windows receiver: %u bytes", frameHeader.payloadSize);
+                LOGI("[SEND] ✓ First frame sent: %u bytes | Total: %.2f KB", frameHeader.payloadSize, totalBytesSent / 1024.0);
             }
 
             const std::uint64_t sentCount = camera.sentFrames.fetch_add(1) + 1;
             if (sentCount % 30u == 0u)
             {
-                LOGI("Sent %llu frames to the Windows receiver", static_cast<unsigned long long>(sentCount));
+                const auto now = std::chrono::steady_clock::now();
+                const auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(now - lastDebugTime);
+
+                if (g_app != nullptr)
+                {
+                    UpdateNetworkStats(g_app->netStats, totalBytesSent, sentCount, true);
+                    LogDebugStats(g_app, "SEND");
+                }
+
+                LOGI("[SEND] Frames: %llu | Size: %u bytes | Total: %.2f MB | Captured: %llu",
+                     static_cast<unsigned long long>(sentCount),
+                     frameHeader.payloadSize,
+                     totalBytesSent / (1024.0 * 1024.0),
+                     static_cast<unsigned long long>(camera.capturedFrames.load()));
             }
         }
 
@@ -1008,7 +1090,10 @@ namespace
         }
 
         camera.running.store(true);
-        LOGI("Camera started");
+        LOGI("[CAMERA] ✓ Camera started successfully!");
+        LOGI("[CAMERA] Output: %ux%u JPEG @ quality %d", camera.streamWidth, camera.streamHeight, kJpegQuality);
+        LOGI("[CAMERA] Zoom: %s (range %.2f-%.2f)", camera.zoomRatioApplied ? "ENABLED (0.6x)" : "DISABLED", 1.0f, 8.0f);
+        LOGI("[CAMERA] Ready to capture and stream frames");
         return true;
     }
 
@@ -1075,18 +1160,35 @@ namespace
 
     static void NetworkLoop(AppState* app)
     {
+        int reconnectAttempts = 0;
         while (app != nullptr && app->running.load())
         {
             int socketFd = -1;
             if (!ConnectSocket(socketFd))
             {
+                reconnectAttempts++;
+                LOGI("[NETWORK] ⏳ Attempt %d: Waiting for adb reverse on 127.0.0.1:5001...", reconnectAttempts);
                 SetStatus("Waiting for adb reverse on 127.0.0.1:5001...");
+                if (app != nullptr)
+                {
+                    app->netStats.connectionStatus = "CONNECTING";
+                    app->netStats.isConnected.store(false);
+                }
                 continue;
             }
 
+            reconnectAttempts = 0;
+            LOGI("[NETWORK] ✓ Connected to Windows receiver at 127.0.0.1:5001");
             SetStatus("Connected to Windows receiver.");
+            if (app != nullptr)
+            {
+                app->netStats.connectionStatus = "CONNECTED";
+                app->netStats.isConnected.store(true);
+            }
+
             const bool ok = SendFrameStream(socketFd, app->camera);
             close(socketFd);
+            socketFd = -1;
 
             if (!app->running.load())
             {
@@ -1095,9 +1197,16 @@ namespace
 
             if (!ok)
             {
+                LOGI("[NETWORK] ✗ Connection dropped. Reconnecting...");
                 SetStatus("Connection dropped. Reconnecting...");
+                if (app != nullptr)
+                {
+                    app->netStats.connectionStatus = "DISCONNECTED";
+                    app->netStats.isConnected.store(false);
+                }
             }
         }
+        LOGI("[NETWORK] Network loop ended");
     }
 
     static void HandleAppCmd(android_app* app, int32_t cmd)
@@ -1106,18 +1215,40 @@ namespace
         switch (cmd)
         {
         case APP_CMD_TERM_WINDOW:
+            LOGI("[APP] Window closed");
             SetStatus("Window closed.");
             break;
         case APP_CMD_GAINED_FOCUS:
+            LOGI("[APP] Gained focus - checking camera permissions");
             if (state != nullptr && HasCameraPermission(app) && !state->cameraStarted.load())
             {
+                LOGI("[APP] Camera permission granted - starting camera");
                 if (StartCamera(state->camera))
                 {
                     state->cameraStarted.store(true);
+                    LOGI("[APP] ✓ Camera started successfully");
+                }
+                else
+                {
+                    LOGE("[APP] ✗ Failed to start camera");
                 }
             }
+            else if (state != nullptr && state->cameraStarted.load())
+            {
+                LOGI("[APP] Camera already started");
+            }
+            break;
+        case APP_CMD_LOST_FOCUS:
+            LOGI("[APP] Lost focus");
+            break;
+        case APP_CMD_PAUSE:
+            LOGI("[APP] App paused");
+            break;
+        case APP_CMD_RESUME:
+            LOGI("[APP] App resumed");
             break;
         default:
+            LOGI("[APP] Command: %d", cmd);
             break;
         }
     }
@@ -1125,16 +1256,24 @@ namespace
 
 void android_main(struct android_app* app)
 {
+    LOGI("=== HandSightCamera Data Testing App Started ===");
+    LOGI("[INIT] App version: 2.0 | Protocol: HSF2v2 | Target: Windows 127.0.0.1:5001");
+
     AppState state;
     state.app = app;
+    state.netStats.lastSampleTime = std::chrono::steady_clock::now();
     g_app = &state;
 
     app->userData = &state;
     app->onAppCmd = HandleAppCmd;
 
+    LOGI("[INIT] Spawning network thread...");
     state.networkThread = std::thread(NetworkLoop, &state);
 
     auto lastPermissionCheck = std::chrono::steady_clock::now() - std::chrono::seconds(2);
+    auto lastDebugLog = std::chrono::steady_clock::now();
+
+    LOGI("[INIT] Entering main loop - waiting for events");
 
     while (state.running.load())
     {
@@ -1148,41 +1287,73 @@ void android_main(struct android_app* app)
             }
             if (app->destroyRequested)
             {
+                LOGI("[MAIN] Destroy requested - shutting down");
                 state.running.store(false);
                 break;
             }
         }
 
         const auto now = std::chrono::steady_clock::now();
+
         if (now - lastPermissionCheck >= std::chrono::seconds(1))
         {
             if (HasCameraPermission(app) && !state.cameraStarted.load())
             {
+                LOGI("[MAIN] Camera permission detected - starting camera");
                 SetStatus("Camera permission granted. Starting camera...");
                 if (StartCamera(state.camera))
                 {
                     state.cameraStarted.store(true);
+                    LOGI("[MAIN] ✓ Camera started");
                 }
                 else
                 {
+                    LOGE("[MAIN] ✗ Camera failed to start");
                     SetStatus("Camera failed to start.");
                 }
             }
             lastPermissionCheck = now;
         }
+
+        if (now - lastDebugLog >= std::chrono::seconds(5) && state.cameraStarted.load())
+        {
+            LOGI("[MAIN] === DEBUG STATS ===");
+            LOGI("[MAIN] Camera: %llu frames captured | Network: %llu frames sent | Connected: %s",
+                 static_cast<unsigned long long>(state.camera.capturedFrames.load()),
+                 static_cast<unsigned long long>(state.camera.sentFrames.load()),
+                 state.netStats.isConnected.load() ? "YES" : "NO");
+            if (state.netStats.isConnected.load())
+            {
+                LOGI("[MAIN] Throughput: %.2f MB/s | Frame rate: %.1f FPS",
+                     state.netStats.currentBytesSec / (1024.0 * 1024.0),
+                     state.netStats.currentFramesSec);
+            }
+            lastDebugLog = now;
+        }
     }
 
+    LOGI("[SHUTDOWN] Stopping camera...");
     state.running.store(false);
     if (state.cameraStarted.load())
     {
         StopCamera(state.camera);
+        LOGI("[SHUTDOWN] Camera stopped");
     }
 
+    LOGI("[SHUTDOWN] Notifying network thread...");
     state.camera.queueCv.notify_all();
     if (state.networkThread.joinable())
     {
+        LOGI("[SHUTDOWN] Waiting for network thread to finish...");
         state.networkThread.join();
+        LOGI("[SHUTDOWN] Network thread finished");
     }
+
+    LOGI("[SHUTDOWN] Final stats - Captured: %llu | Sent: %llu | Total bytes: %.2f MB",
+         static_cast<unsigned long long>(state.camera.capturedFrames.load()),
+         static_cast<unsigned long long>(state.camera.sentFrames.load()),
+         state.netStats.totalBytesSent / (1024.0 * 1024.0));
+    LOGI("=== HandSightCamera Shutdown Complete ===");
 
     g_app = nullptr;
 }

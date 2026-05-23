@@ -1,28 +1,33 @@
 # HandSight - Android-to-Windows Live Camera Stream
 
-A real-time camera streaming application that transmits JPEG frames from an Android phone to a Windows receiver app over a network connection using the `HandSightStreamProtocol`.
+A real-time camera streaming application that transmits JPEG frames from an Android phone to a Windows receiver app over a network connection using the `HandSightStreamProtocol`. Includes comprehensive debug logging and statistics for testing and development.
 
 ## Project Structure
 
 ```
 HandSight/
-├── Hand-Sight/                  # Windows receiver app (C++)
-│   ├── Hand-Sight.cpp          # Main Windows UI and networking
-│   ├── Hand-Sight.h            # Header
-│   ├── CMakeLists.txt          # CMake build configuration
-│   └── out/                    # Build output directory
+├── Data-Testing/                 # Core data gathering and testing application
+│   ├── Hand-Sight/              # Windows receiver app (C++)
+│   │   ├── Hand-Sight.cpp       # Main Windows UI and networking
+│   │   ├── Hand-Sight.h         # Header
+│   │   ├── CMakeLists.txt       # CMake build configuration
+│   │   └── out/                 # Build output directory
+│   │
+│   ├── android/HandSightCamera/ # Android sender app (NDK) with debug UI
+│   │   ├── jni/
+│   │   │   └── HandSightCamera.cpp # Android native camera + debug logging
+│   │   ├── AndroidManifest.xml  # Android app manifest
+│   │   ├── Application.mk       # NDK build config
+│   │   ├── Android.mk           # NDK build rules (updated paths)
+│   │   ├── build.ps1            # PowerShell build script
+│   │   └── out/                 # Build output (APKs)
+│   │
+│   └── shared/
+│       └── HandSightStreamProtocol.h  # Network protocol header
 │
-├── android/HandSightCamera/    # Android sender app (NDK)
-│   ├── jni/
-│   │   └── HandSightCamera.cpp # Android native camera code
-│   ├── AndroidManifest.xml     # Android app manifest
-│   ├── Application.mk          # NDK build config
-│   ├── Android.mk              # NDK build rules
-│   ├── build.ps1               # PowerShell build script
-│   └── out/                    # Build output (APKs)
-│
-└── shared/
-    └── HandSightStreamProtocol.h  # Network protocol header (shared between apps)
+├── CLAUDE.md                    # This documentation
+├── README.md                    # Project overview
+└── LICENSE                      # License
 ```
 
 ## Technology Stack
@@ -41,18 +46,18 @@ HandSight/
 
 ### Build Windows App
 ```bash
-cd Hand-Sight
+cd Data-Testing/Hand-Sight
 mkdir out && cd out
 cmake -G "Ninja" -DCMAKE_BUILD_TYPE=Debug ..
 cmake --build . --config Debug
-# Output: Hand-Sight\out\Hand-Sight.exe
+# Output: Data-Testing/Hand-Sight/out/Hand-Sight.exe
 ```
 
 ### Build Android App
 ```bash
-cd android/HandSightCamera
+cd Data-Testing/android/HandSightCamera
 ./build.ps1  # Or use Android Studio
-# Output: HandSightCamera/out/HandSightCamera-signed.apk
+# Output: Data-Testing/android/HandSightCamera/out/HandSightCamera-signed.apk
 ```
 
 ## Running the Application
@@ -66,7 +71,7 @@ cd android/HandSightCamera
 
 1. **Start Windows app** (listens on port 5001):
    ```
-   Hand-Sight\out\Hand-Sight.exe
+   Data-Testing\Hand-Sight\out\Hand-Sight.exe
    ```
    Window will show: "Waiting for adb reverse client on 127.0.0.1:5001..."
 
@@ -82,10 +87,17 @@ cd android/HandSightCamera
    adb shell am start -n "com.handsight.camera/android.app.NativeActivity"
    ```
 
-4. **Verify Connection**:
+4. **Monitor Android Debug Output** (highly recommended):
+   ```bash
+   adb logcat -s HandSightCamera:I
+   ```
+   This shows real-time stats, connection status, frame counts, and throughput metrics.
+
+5. **Verify Connection**:
    - Windows app should show: "Client connected. Receiving JPEG frames..."
    - Camera feed should appear in the Windows window
    - Phone camera should be streaming at 1280x960 JPEG @ ~30fps
+   - Android logcat should show connection messages and streaming stats every 30 frames
 
 ### Status Messages
 
@@ -96,13 +108,73 @@ cd android/HandSightCamera
 | "Connection lost. Waiting for reconnect..." | Network dropped | Restart Android app |
 | "JPEG decode failed" | Frame corruption | Check network quality |
 
+## Debug Features & Logging
+
+The Android app includes comprehensive debug logging to monitor application behavior during testing. All output is sent to `logcat` and categorized by module:
+
+### Android Debug Output Categories
+
+| Category | Shows | Example |
+|----------|-------|---------|
+| `[INIT]` | App initialization and startup | "App version: 2.0 \| Protocol: HSF2v2" |
+| `[APP]` | Lifecycle events (focus, pause, resume) | "Gained focus", "Camera permission granted" |
+| `[CAMERA]` | Camera selection and configuration | "✓ Camera started: 1280x960 @ quality 92" |
+| `[NETWORK]` | Network connection status | "✓ Connected to Windows receiver" |
+| `[SEND]` | Frame transmission stats | "Frames: 30 \| Size: 27KB \| Total: 45.2 MB" |
+| `[DEBUG-SEND]` | Per-frame throughput metrics | "Connected: YES \| Bytes: 542.3 KB/s \| FPS: 28.1" |
+| `[MAIN]` | Main loop statistics (every 5s) | "Captured: 450 frames \| Sent: 420 frames" |
+| `[SHUTDOWN]` | Graceful shutdown info | "Final stats - Captured: 1200 \| Sent: 1150" |
+
+### How to Monitor
+
+Watch all HandSightCamera debug output in real-time:
+```bash
+adb logcat -s HandSightCamera:I
+```
+
+Filter by specific category (e.g., network events):
+```bash
+adb logcat -s HandSightCamera:I | grep "\[NETWORK\]"
+```
+
+Save logs to file for analysis:
+```bash
+adb logcat -s HandSightCamera:I > handsight-debug.log
+```
+
+### Key Metrics Displayed
+
+- **Connection Status**: Indicates if currently connected to Windows receiver
+- **Throughput**: Real-time bytes per second (KB/s and MB/s)
+- **Frame Rate**: Frames per second being transmitted
+- **Frame Count**: Total frames captured vs. sent (helps detect drops)
+- **Payload Size**: Bytes per JPEG frame
+- **Camera Info**: Resolution, quality setting, zoom status
+
+### Example Debug Output
+
+```
+[INIT] App version: 2.0 | Protocol: HSF2v2 | Target: Windows 127.0.0.1:5001
+[CAMERA] ✓ Camera started successfully!
+[CAMERA] Output: 1280x960 JPEG @ quality 92
+[NETWORK] ✓ Connected to Windows receiver at 127.0.0.1:5001
+[SEND] ✓ First frame sent: 45823 bytes | Total: 45.23 KB
+[SEND] Frames: 30 | Size: 42100 bytes | Total: 891.5 MB | Captured: 450
+[DEBUG-SEND] Connected: YES | Frames: 450 | Bytes: 542.30 KB/s (0.53 MB/s) | FPS: 28.1 | Status: CONNECTED
+```
+
 ## Key Bug Fixes Applied
 
 ### Image Scaling Issue (Fixed 2026-05-22)
 - **Problem**: Video appeared stretched/distorted
 - **Cause**: ComputeFitRect() used `std::max()` instead of `std::min()` for scale calculation, causing oversized rendering
 - **Fix**: Changed to proper aspect-ratio-preserving scaling with `std::min()` and removed forced minimum size constraints
-- **Lines**: Hand-Sight.cpp:130-133
+- **Lines**: Data-Testing/Hand-Sight/Hand-Sight.cpp:130-133
+
+### Android Debug UI (Added 2026-05-22)
+- **Enhancement**: Comprehensive logcat logging with categorized output
+- **Features**: Real-time metrics (throughput, FPS, frame counts), connection status, detailed error messages
+- **Lines**: Data-Testing/android/HandSightCamera/jni/HandSightCamera.cpp (multiple locations)
 
 ## Network Protocol
 

@@ -18,7 +18,7 @@ if (CMAKE_VERSION VERSION_GREATER 3.12)
   set_property(TARGET Hand-Sight PROPERTY CXX_STANDARD 20)
 endif()
 
-target_include_directories(Hand-Sight PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/.." )
+target_include_directories(Hand-Sight PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/../../" )
 target_compile_definitions(Hand-Sight PRIVATE UNICODE _UNICODE)
 target_link_libraries(Hand-Sight PRIVATE
   ws2_32

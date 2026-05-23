@@ -130,7 +130,7 @@ namespace
         }
     }
 
-    static void LogDebugStats(AppState* app, const char* context)
+    static void LogDebugStats(const AppState* app, const char* context)
     {
         if (app == nullptr)
             return;
